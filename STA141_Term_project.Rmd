@@ -1,0 +1,369 @@
+---
+title: "STA141_Term_Project"
+author: "Libby Amir"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(gridExtra)
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r, echo=FALSE}
+# load the data from file path
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('/Users/libbyamir/Downloads/STA141 Project Folder/sessions/session',i,'.rds',sep=''))
+}
+```
+
+## Abstract
+
+  In this report, I attempt to build a model that predicts whether or not mice will perform the correct task given visual stimuli. I explore data from a study conducted by Steinmetz et al. (2019), using several methods of analysis and statistical testing. After exploratory data analysis, some trial and error, method comparison, and performance evaluation, I ultimately built a model with an average accuracy of about 70%. The predictors used for my logistic regression model expose some of the most significant factors in the neurological processes that lead to decision making. Visual contrast and neuron spikes are two metrics that are investigated thoroughly.
+
+## Section 1: Introduction
+
+  The study conducted by Steinmetz et al. (2019) explored the intricate neural processes of decision-making in mice during visual tasks. Over the course of 39 experimental sessions involving 10 different mice, the researchers observed how neural activity in the visual cortex correlated with task outcomes. Each session consisted of several hundred trials where mice were presented with visual stimuli on dual screens, requiring them to make decisions based on the screens' contrast levels.
+
+  The visual stimuli varied across trials, encompassing contrast levels from 0 to 1, where 0 denotes the absence of a stimulus. Mice responded using a forepaw-controlled wheel, with their decisions leading to rewards or penalties (feedback). The decision outcomes were contingent on the relative contrast levels presented:
+
+-   When left contrast exceeded right contrast, success was defined as turning the wheel right and failure as any other response.
+
+-   When right contrast surpassed left contrast, success entailed turning the wheel left and failure any other response.
+
+-   When both left and right contrasts were zero, success resulted from holding the wheel still, otherwise, it led to failure
+
+-   Lastly, in cases of equal but non-zero left and right contrasts, the correct choice (left or right) was randomly determined.
+
+  The neural activity of the mice's visual cortex was recorded during these trials, yielding spike trains - collections of time stamps corresponding to the neurons firing. This data encompasses a critical window from stimulus onset to 0.4 seconds post-onset, focusing on the crucial period of decision-making.
+
+  In this statistical analysis and prediction, I narrow my focus to the first 18 sessions involving four specific mice: Cori, Frossman, Hence, and Lederberg. Using this subset of data, I developed a predictive model that utilizes neural activity patterns to forecast whether or not the mouse will succeed at a given task. This relationship between neural dynamics and task performance provides novel insights to the field of cognitive neuroscience and decision-making processes.
+
+## Section 2: Exploratory Analysis
+
+  The data itself is robust and complex, so the first step of the analysis is just grasping the structure and information within the data set. Once the potential of the data is understood, values can be extracted to begin to see trends and patterns. Analyzing plots, tables, and summary statistics will contribute more to the overall understanding. Then, some statistical testing will provide more specific insight into which features are most significant in predicting trial results.
+
+  The first point of interest is the rate at which the mice succeed at their given task. While this is general information compared to the actual objective, this "rate of success" conveys the neural capability of the mice. Additionally, their overall performance may skew the data in a certain direction, a source of bias that might require consideration later on. 
+
+#### Overall rate of success:
+
+```{r, echo=FALSE}
+# get the proportion of the trials that are successes
+n.session=length(session)
+
+n_success = 0
+n_trial = 0
+for(i in 1:n.session){
+    tmp = session[[i]];
+    n_trial = n_trial + length(tmp$feedback_type);
+    n_success = n_success + sum(tmp$feedback_type == 1);
+}
+n_success/n_trial
+```
+  
+  Using some simple data extraction and manipulation, I got a 0.7100964 rate of succcess. Approximately 71% of the trials are successes, which subsequently means that approximately 29% of the trials are failures. This disproportionate distribution out outcomes is important to consider when building the model.
+  
+```{r, echo=FALSE}
+# initialize data frame with empty variables: session number, trial number, left/right contrasts, feedback type, and mouse name
+combined_trials <- data.frame(session_num = integer(), trial_num = integer(), left_contrast = numeric(), right_contrast = numeric(), feedback_type = integer(), name = character(), stringsAsFactors = FALSE)
+
+# loop through each session
+for (i in seq_along(session)) {
+  # get current session
+  current_session <- session[[i]]
+  
+  # get number of trials in current session
+  num_trials <- length(current_session$spks)
+  
+  # create data frame to store trials for the current session
+  session_trials <- data.frame(session_num = rep(i, num_trials),
+                               trial_num = 1:num_trials,
+                               left_contrast = current_session$contrast_left,
+                               right_contrast = current_session$contrast_right,
+                               feedback_type = current_session$feedback_type,
+                               name = current_session$mouse_name,
+                               stringsAsFactors = FALSE)
+  
+  # append session trials to the combined data frame
+  combined_trials <- rbind(combined_trials, session_trials)
+}
+```
+
+  To further investigate this rate of success, it is best to focus on each invidual mouse. Each of the four mice did a different number of trials, and since they receive feedback in the form of either a reward or penalty, it would make sense if their success rate improved with more trials. To start examining this potential trend in the data, I can look at the overall average success rate of each mouse over all of the trials in relation to their total number of trials. After obtaining these numbers and plotting them, I see that there is an overall upwards trend between total trials and average success rate. 
+  
+```{r, echo=FALSE}
+mouse_summary <- combined_trials %>%
+  group_by(name) %>%
+  summarise(total_trials = n(),  # Calculate total number of trials
+            success_rate = sum(feedback_type == 1) / total_trials)  # Calculate success rate
+
+# Visualize the relationship using a scatter plot
+ggplot(mouse_summary, aes(x = total_trials, y = success_rate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Rate of Success vs. Total Number of Trials by Mouse",
+       x = "Total Number of Trials", y = "Rate of Success") +
+  theme_minimal()
+```
+  
+  From the plot, I can somewhat confirm that mice with more trials tend to have higher rates of success. This implies that the number of trials a mouse has done might be a relevant metric in predicting success. All things considered, there are potentially confounding factors that lead to exceptions in this trend. However, given our small sample size of only 4 mice this irregularity is pretty expected.
+  
+  There is a lot of analysis that could go into just understanding the several distributions within the data. For example, I would not expect to see a difference between the distributions of successe/failure between left and rigth contrast. Different levels of contrast might have different likelihoods of success, but there should not be a difference in whether the stimuli is left or right. If there was a difference, this might suggest an external confounding factor, like semi-blindness in the mouse or bias in the trials that favors one direction over the other. To confirm that both left and right have nearly the same distribution, I plotted the frequency of feedback relative to the given contrast. As seen below, the two have very similar if not identical distributions. Thus, it is safe to proceed without concern about this source of bias.
+
+```{r, echo=FALSE}
+# Bar plots for left and right contrast by feedback type
+ggplot(combined_trials, aes(x = left_contrast, fill = factor(feedback_type))) +
+  geom_bar(position = "dodge") +
+  labs(title = "Left Contrast Distribution by Feedback Type", x = "Left Contrast", y = "Count") +
+  theme_minimal()
+
+ggplot(combined_trials, aes(x = right_contrast, fill = factor(feedback_type))) +
+  geom_bar(position = "dodge") +
+  labs(title = "Right Contrast Distribution by Feedback Type", x = "Right Contrast", y = "Count") +
+  theme_minimal()
+```
+  
+  To better understand the impact of the visual contrast behind the decision making, I looked at the absolute difference between the left and right contrasts. This value is a magnitude that explains the confidence behind making a decision and performing the correct task. A greater magnitude would imply a more obvious decision and thus greater confidence in the decision. By performing a chi-squared test for independence between feedback type and the absolute difference in contrasts, I can see if these two variable truly have an association.
+
+```{r, echo=FALSE}
+# new column for the absolute difference between left and right contrasts
+combined_trials$abs_contrast_diff <- abs(combined_trials$left_contrast - combined_trials$right_contrast)
+
+# chi-squared test for independence
+chi_sq_test <- chisq.test(table(combined_trials$feedback_type, cut(combined_trials$abs_contrast_diff, breaks = 5)))
+
+# test results
+print(chi_sq_test)
+```
+
+  This chi-squared test actually provides a lot of information about the data. Starting with the chi-squared value itself: a rather large number of 117.89 suggests a relatively strong association between the difference in contrasts and the feedback type. Furthermore, the p-value in this test is \< 2.2e-16, an extremely small value. In this chi-squared test, the null hypothesis is that the two variables are independent of one another. Given how small the p-value is, under nearly any chosen significance level I would conclude that there is statistical evidence to reject the null hypothesis. In other words, I can reject the notion that the variables are independent of eachother, and should therefore assume that they have an association. This makes sense under the context because the magnitude of the difference in contrasts is important in how the mice make decisions. A bigger difference between the left and right contrasts would intuitively be more obvious, and therefore increase the probability of success for the mouse. Similarly, a smaller difference would be harder for a mouse to distinguish, and would likely decrease the probability of success. Confirming this statistical trend is crucial, and helps in building the predictive model.
+
+  Another element that demonstrates a mouse's experience level is the session number. The mice were tested for different amounts of sessions, which might indicate something about their familiarity with the task. To see if mice perform better in later sessions than starting sessions, I plotted their average success rates per session in sequential order and observe any trends.
+
+```{r, echo= FALSE, include=FALSE}
+library(dplyr)
+library(ggplot2)
+
+# Calculate the average success rate for each session of each mouse
+success_rates <- combined_trials %>%
+  group_by(name, session_num) %>%
+  summarise(avg_success_rate = mean(feedback_type == 1))
+```
+```{r, echo=FALSE}
+
+# Plot the average success rate against session order for each mouse
+ggplot(success_rates, aes(x = session_num, y = avg_success_rate, group = name, color = name)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Average Success Rate by Session Order",
+       x = "Session Order",
+       y = "Average Success Rate") +
+  theme_minimal()
+```
+  
+  As seen above, the graph is not the most precise but it does give a little more information. For every mouse, there is at least one jump in improvement between successive sessions. This implies that with experience they have higher success rates, similarly to what I deduced from analyzing the relationship between overall success rate and total number of trials per mouse. A similar upwards trend is seen here, however, there are also some discrepancies. Every mouse has a higher success rate in their last session when compared to their first, except Forssmann's total improvement is very minimal. This only shows part of the picture, which might explain these inconsistencies. For example, the bigger jumps in success rate might be from sessions that consisted of more trials. There are also some dips in the success rates of the mice, which might be related to the types of visuals or level of contrast presented to the mice. Regardless of the many ups and downs we see here, it is safe to assume that there is a relationship between session number and probability of success.
+
+  The nature of the neuron spikes data is more convoluted, therefore it might be easier to summarize the information before attempting to implement it into our predictive model. First, I obtained the total number of spikes per trial, an easier number to work with than the matrix representation stored in the data set. Then I analyzed the relationship between the number of spikes and the outcome of each trial to see if there is a significance. To assess this relationship I used various statistical tests, including the Welch Two Sample t-test and the Wilcoxon rank sum test.
+  
+```{r, echo=FALSE}
+# Function to calculate total number of spikes for each trial
+calculate_total_spikes <- function(session_data) {
+  total_spikes <- sapply(session_data$spks, function(spikes_matrix) sum(spikes_matrix))
+  return(total_spikes)
+}
+
+# Iterate through each session and calculate total spikes for each trial
+total_spikes_list <- lapply(session, function(session_data) calculate_total_spikes(session_data))
+
+# Flatten the list of total spikes
+total_spikes <- unlist(total_spikes_list)
+
+# Add total spikes as a new column to combined_trials dataframe
+combined_trials$total_spikes <- total_spikes
+
+# Separate total spikes by feedback type
+total_spikes_success <- combined_trials$total_spikes[combined_trials$feedback_type == 1]
+total_spikes_failure <- combined_trials$total_spikes[combined_trials$feedback_type == -1]
+
+# Perform a two-sample t-test
+t_test_result <- t.test(total_spikes_success, total_spikes_failure)
+
+# Perform a Wilcoxon rank-sum test as an alternative
+wilcoxon_test_result <- wilcox.test(total_spikes_success, total_spikes_failure)
+
+# Print the test results
+print(t_test_result)
+print(wilcoxon_test_result)
+```
+
+  In the Welch two sample t-test, I evaluated if the average number of spikes per trial is statistically different for successes versus failures. A p-value of 1.389e-08 is very small, suggesting that I should reject the null hypothesis that the difference between the means is 0. In other words, it can be assumed that there is a non-zero difference between the mean number of spikes per trial for successful trials versus failed attempts. To further this assumption, I got very similar results from the Wilcoxon rank sum test. The null hypothesis is that there is no difference in the distributions of spikes between successes and and failures. This test resulted in a p-value of 2.184e-06, so we once again reject the null hypothesis. Thus, there is a statistically significant difference between the distributions of the two grups. Overall, both tests suggest that the number of neuron spikes in a trial might be a significant feature in predicting trial feedback.
+
+## Section 3: Data Integration
+
+  After distinguishing multiple features that contribute to whether or not a trial is a success or failure, I can now build a model that represents these relationships. The predictors are the absolute difference in contrasts, session number, trial number, and spikes per trial. After standardizing the predictors, I also had to convert the dependent variable from consisting of -1 and 1 to 0 and 1. This change is important when using a binomial logistic model, and doesn't impact the data in any other way. Then I simply fit the model to the data and retrieve its summary statistics.
+  
+```{r, echo=FALSE}
+# Change values of feedback_type
+combined_trials$feedback_type <- ifelse(combined_trials$feedback_type == -1, 0, 1)
+```
+
+## Section 4: Predictive Modeling
+
+```{r, echo=FALSE}
+# Load required libraries
+library(glmnet)
+
+# Prepare the data
+predictors <- combined_trials[, c("abs_contrast_diff", "session_num", "trial_num", "total_spikes")]
+
+# Standardize the predictors
+predictors_scaled <- scale(predictors)
+
+# Define the outcome variable
+outcome <- combined_trials$feedback_type
+
+# Fit the logistic regression model
+logistic_model <- glm(outcome ~ ., data = as.data.frame(predictors_scaled), family = binomial)
+
+# Summarize the model
+summary(logistic_model)
+```
+
+  Before continuing into prediction performance, I already gathered some information from the statistics above. I saw that the four variables chosen as predictors are all statistically significant in this model because of their extremely small corresponding p-values. This means the chosen predictors worked well, and none of them are obsolete in the model. If one of the variables were insignificant, further analysis could be performed to decide if it should be removed to improve the accuracy of the model. It could also be switched out for a different, more relevant variable, but it seems that our predictors are sufficient.
+
+## Section 5: Prediction Performance
+
+  For evaluating preformance, I started with calculating some basic metrics like accuracy, an error/confusion matrix, precision, recall, and an F1 score.
+  
+```{r, echo=FALSE}
+# Predictions from the logistic regression model
+predictions <- ifelse(predict(logistic_model, type = "response") > 0.5, 1, 0)
+
+# Confusion matrix
+conf_matrix <- table(combined_trials$feedback_type, predictions)
+
+# Accuracy
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+
+# Precision
+precision <- conf_matrix[2, 2] / sum(predictions)
+
+# Recall
+recall <- conf_matrix[2, 2] / sum(combined_trials$feedback_type == 1)
+
+# F1 Score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print the metrics
+cat("Accuracy:", accuracy, "\n")
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("F1 Score:", f1_score, "\n")
+
+# Print the confusion matrix
+print(conf_matrix)
+
+```
+
+  An accuracy of 0.7010431 means that about 70% of the observations were classified correctly by the prediction model. While this accuracy is not perfect, it still indicates that the model is appropriately classifying most of the time. Precision is 0.7118232, so the model rarely makes false positive predictions. This precision level is decent considering the complexity of the data and the nature of the brain. The recall is significantly high, at 0.9728381. This indicates that the model is capturing a large portion of the positive instances and is able to identify them. More importantly, the F1 score is a relatively high 0.8221103. A high F1 score indicates that the model is achieving both high precision and high recall. This is especially useful in evaluating the model because we observed a pretty large imbalance between the number of successes and failures during EDA, and this metric is independent of that bias.
+
+  It is also important to get more information about model performance from plotting an ROC curve and a Precision-Recall Curve.
+  
+```{r, echo=FALSE}
+# Load required library
+library(ROCR)
+
+# ROC Curve
+predictions <- predict(logistic_model, type = "response")
+roc_obj <- prediction(predictions, combined_trials$feedback_type)
+roc_perf <- performance(roc_obj, "tpr", "fpr")
+plot(roc_perf, main = "ROC Curve")
+abline(a = 0, b = 1, col = "gray")
+# Calculate AUC for ROC curve
+roc_auc <- performance(roc_obj, "auc")@y.values[[1]]
+
+# Print the AUC
+cat("AUC for ROC Curve:", roc_auc, "\n")
+
+# Precision-Recall Curve
+pr_perf <- performance(roc_obj, "prec", "rec")
+plot(pr_perf, main = "Precision-Recall Curve")
+```
+  
+  The ROC curve shows that the model performs better than a random classifier, which indicates a level of performance. Then I also calculated the area under the ROC curve (AUC), which is 0.64716. Once again, this indicates better disrimination ability than a random classifier which would have an AUC of 0.5. The precision-recall curve also provides us with more insight, as it considers many thresholds rather than just the individual performance statistics calculated before. This curve is not very ideal since it is almost a straight line. Ideally, the precision-recall would have bigger step-like patterns, but in this context it is ok for the recall and precision trade-off to be decent instead of perfect. 
+  
+```{r, echo=FALSE}
+# load the data from file path
+test_session=list()
+for(i in 1:2){
+  x <- c(1, 18)
+  test_session[[x[[i]]]]=readRDS(paste('/Users/libbyamir/Downloads/test/test',i,'.rds',sep=''))
+}
+```
+
+```{r, echo=FALSE}
+# initialize data frame with empty variables: session number, trial number, left/right contrasts, feedback type, and mouse name
+test_trials <- data.frame(session_num = integer(), trial_num = integer(), left_contrast = numeric(), right_contrast = numeric(), feedback_type = integer(), name = character(), stringsAsFactors = FALSE)
+
+# loop through each session
+for (i in c(1,18)) {
+  # create data frame to store trials for the current session
+  session_trials <- data.frame(session_num = c(rep(i, times = length(test_session[[i]]$feedback_type))),
+                               trial_num = c(1:length(test_session[[i]]$feedback_type)),
+                               left_contrast = c(test_session[[i]]$contrast_left),
+                               right_contrast = c(test_session[[i]]$contrast_right),
+                               feedback_type = c(test_session[[i]]$feedback_type),
+                               name = c(rep(test_session[[i]]$mouse_name, times = length(test_session[[i]]$feedback_type))),
+                               stringsAsFactors = FALSE)
+  
+  # append session trials to the combined data frame
+  test_trials <- rbind(test_trials, session_trials)
+}
+```
+
+```{r, include=FALSE}
+# Change values of feedback_type
+test_trials$feedback_type <- ifelse(test_trials$feedback_type == -1, 0, 1)
+
+# Iterate through each session and calculate total spikes for each trial
+total_spikes_list <- lapply(test_session, function(session_data) calculate_total_spikes(session_data))
+
+# Flatten the list of total spikes
+total_spikes <- unlist(total_spikes_list)
+
+# Add total spikes as a new column to combined_trials dataframe
+test_trials$total_spikes <- total_spikes
+
+# new column for the absolute difference between left and right contrasts
+test_trials$abs_contrast_diff <- abs(test_trials$left_contrast - test_trials$right_contrast)
+```
+  Finally, I tested the model on new data to evaluate its general performance and gauge the potential of overfit. If the accuracy when testing new data is significantly lower than with the training data, this might indicate that the model has overfitted the training data and is therefore not ideal for generalization. 
+```{r, echo=FALSE}
+predictions <- predict(logistic_model, newdata = test_trials, type = "response")
+
+class_predictions <- ifelse(predictions > 0.5, 1, 0)
+
+
+# Compare predicted classes with actual classes
+accuracy <- mean(class_predictions == test_trials$feedback_type)
+
+
+# Print the metrics
+cat("Accuracy:", accuracy, "\n")
+
+# Print the confusion matrix
+conf_matrix <- table(test_trials$feedback_type, class_predictions)
+print(conf_matrix)
+```
+  
+  The testing accuracy is about 72.5% which is even higher than the training accuracy. This is interesting and somewhat surprising, but means that our model is most likely not overfit, which is a good sign. The test dataset is pretty small, so this might explain why the accuracy happened to be so good. Testing on larger amounts of data might give greater insight into the overall performance and generalization of the model, however this still confirmed some good performance. 
+
+## Section 6: Discussion
+
+  While I achieved a pretty decent model with about 70% accuracy, there is still a lot that could be done in the future to achieve an even higher accuracy. There are several tuning methods that can improve the model overall, as well as other attributes of the data that I did not manage to include as predictors in the model. With that being said, I am still relatively impressed with the performance of the model, especially when tested on new data. A lot of the hypotheses that I had when exploring the data were confirmed to be true once constructing and testing the model. This includes the significance of high contrast in presenting more obivous information to the mice. In general, more obvious information will trigger the neurons and lead to more clarity in decision making. I also confirmed that experience with the trials led to greater expertise for the mice, and ultimately this led to higher success in the task. This trend implies that the decisions made by the mice became finer tuned with time and practice. These overall sentiments could be further explored to probably apply to humans, and provide insight to the human decision making process. When presented with more obvious information and lots of practice, the brain is more capable of making rational/correct decisions. Several applications of this could be investigated in psychological experiments to prove hypotheses involving effective training patterns, such as study methods. This topic is very expansive, and this model is just one peek into the complex nature of the brain. 
